@@ -1,0 +1,25 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Template {
+  id          String   @id @default(cuid())
+  name        String
+  description String
+  category    String   // e.g., 'Full-Stack', 'E-Commerce', 'SaaS', 'Admin'
+  icon        String   @default("Layers")
+  isPreset    Boolean  @default(false)
+  isPublic    Boolean  @default(true)
+  stars       Int      @default(0)
+  downloads   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Configuration JSON (Target stack, DB, Docker, Auth, Entities)
+  configJson  String   // JSON stringified TemplateConfig
+}
