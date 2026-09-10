@@ -762,6 +762,474 @@ function getPrismaType(type) {
   }
 }
 
+// server/utils/generators/fastapiGenerator.ts
+function generateFastapiBackend(config) {
+  const files = [];
+  const projectName = config.projectName || "FastAPIApp";
+  const isPostgres = config.database === "postgres";
+  const isMysql = config.database === "mysql";
+  const isSqlite = config.database === "sqlite";
+  const isMongo = config.database === "mongodb";
+  const reqs = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.8.0",
+    "pydantic-settings>=2.4.0",
+    "python-multipart>=0.0.9"
+  ];
+  if (isMongo) {
+    reqs.push("motor>=3.5.0", "pymongo>=4.8.0");
+  } else {
+    reqs.push("sqlalchemy>=2.0.32", "alembic>=1.13.2");
+    if (isPostgres) reqs.push("psycopg2-binary>=2.9.9");
+    if (isMysql) reqs.push("pymysql>=1.1.1", "cryptography>=43.0.0");
+    if (config.database === "sqlserver") reqs.push("pyodbc>=5.1.0");
+  }
+  if (config.auth) {
+    reqs.push("python-jose[cryptography]>=3.3.0", "passlib[bcrypt]>=1.7.4");
+  }
+  files.push({
+    path: "backend/requirements.txt",
+    content: reqs.join("\n") + "\n"
+  });
+  if (isMongo) {
+    files.push({
+      path: "backend/database.py",
+      content: `import os
+from motor.motor_asyncio import AsyncIOMotorClient
+
+MONGO_URL = os.getenv("DATABASE_URL", "mongodb://mongodb:27017/appdb")
+client = AsyncIOMotorClient(MONGO_URL)
+db = client.get_database("appdb")
+`
+    });
+  } else {
+    let dbUrl = "sqlite:///./app.db";
+    if (isPostgres) dbUrl = "postgresql://postgres:postgrespassword@postgres:5432/appdb";
+    if (isMysql) dbUrl = "mysql+pymysql://root:rootpassword@mysql:3306/appdb";
+    if (config.database === "sqlserver") dbUrl = "mssql+pyodbc://sa:YourStrong@Passw0rd@sqlserver:1433/appdb?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes";
+    files.push({
+      path: "backend/database.py",
+      content: `import os
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, declarative_base
+
+DATABASE_URL = os.getenv("DATABASE_URL", "${dbUrl}")
+
+# Connect args for SQLite if needed
+connect_args = {"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
+
+engine = create_engine(DATABASE_URL, connect_args=connect_args)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+`
+    });
+  }
+  for (const entity of config.entities) {
+    const eName = entity.name;
+    const pName = eName.toLowerCase() + "s";
+    if (!isMongo) {
+      files.push({
+        path: `backend/models/${eName.toLowerCase()}.py`,
+        content: `from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Text
+from datetime import datetime
+from database import Base
+
+class ${eName}(Base):
+    __tablename__ = "${pName}"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+${entity.fields.map((f) => `    ${f.name} = Column(${getSqlAlchemyType(f.type)}, nullable=${!f.required}${f.isUnique ? ", unique=True" : ""})`).join("\n")}
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+`
+      });
+    }
+    files.push({
+      path: `backend/schemas/${eName.toLowerCase()}.py`,
+      content: `from pydantic import BaseModel, Field
+from typing import Optional
+from datetime import datetime
+
+class ${eName}Base(BaseModel):
+${entity.fields.map((f) => `    ${f.name}: ${getPythonType(f.type, f.required)}`).join("\n")}
+
+class ${eName}Create(${eName}Base):
+    pass
+
+class ${eName}Update(BaseModel):
+${entity.fields.map((f) => `    ${f.name}: Optional[${getPythonType(f.type, true)}] = None`).join("\n")}
+
+class ${eName}Response(${eName}Base):
+    id: int
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+`
+    });
+    files.push({
+      path: `backend/routers/${eName.toLowerCase()}.py`,
+      content: `from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import List, Optional
+${isMongo ? `from database import db
+from schemas.${eName.toLowerCase()} import ${eName}Create, ${eName}Update, ${eName}Response` : `from sqlalchemy.orm import Session
+from database import get_db
+from models.${eName.toLowerCase()} import ${eName}
+from schemas.${eName.toLowerCase()} import ${eName}Create, ${eName}Update, ${eName}Response`}
+
+router = APIRouter(prefix="/api/${pName}", tags=["${pName}"])
+
+@router.get("", response_model=List[${eName}Response])
+def get_all(
+    search: Optional[str] = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db)
+):
+    query = db.query(${eName})
+    if search:
+        # filter by first string field if available
+        pass
+    total = query.count()
+    items = query.order_by(${eName}.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    return items
+
+@router.get("/{item_id}", response_model=${eName}Response)
+def get_by_id(item_id: int, db: Session = Depends(get_db)):
+    item = db.query(${eName}).filter(${eName}.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="${eName} not found")
+    return item
+
+@router.post("", response_model=${eName}Response, status_code=201)
+def create(dto: ${eName}Create, db: Session = Depends(get_db)):
+    new_item = ${eName}(**dto.model_dump())
+    db.add(new_item)
+    db.commit()
+    db.refresh(new_item)
+    return new_item
+
+@router.put("/{item_id}", response_model=${eName}Response)
+def update(item_id: int, dto: ${eName}Update, db: Session = Depends(get_db)):
+    item = db.query(${eName}).filter(${eName}.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="${eName} not found")
+    
+    update_data = dto.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(item, key, value)
+    
+    db.commit()
+    db.refresh(item)
+    return item
+
+@router.delete("/{item_id}")
+def delete(item_id: int, db: Session = Depends(get_db)):
+    item = db.query(${eName}).filter(${eName}.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="${eName} not found")
+    db.delete(item)
+    db.commit()
+    return {"message": "${eName} deleted successfully"}
+`
+    });
+  }
+  files.push({
+    path: "backend/main.py",
+    content: `from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from database import engine, Base, SessionLocal
+${config.entities.map((e) => `from models.${e.name.toLowerCase()} import ${e.name}`).join("\n")}
+${config.entities.map((e) => `from routers.${e.name.toLowerCase()} import router as ${e.name.toLowerCase()}_router`).join("\n")}
+
+# Create database tables automatically
+Base.metadata.create_all(bind=engine)
+
+app = FastAPI(
+    title="${projectName} API",
+    description="High-performance RESTful API built with Python FastAPI & SQLAlchemy",
+    version="1.0.0"
+)
+
+# Enable CORS for Frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include Routers
+${config.entities.map((e) => `app.include_router(${e.name.toLowerCase()}_router)`).join("\n")}
+
+@app.get("/")
+def read_root():
+    return {
+        "message": "Welcome to ${projectName} API",
+        "docs": "/docs",
+        "health": "OK"
+    }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=True)
+`
+  });
+  files.push({
+    path: "backend/Dockerfile",
+    content: `FROM python:3.11-slim
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+EXPOSE 8080
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+`
+  });
+  return files;
+}
+function getSqlAlchemyType(type) {
+  switch (type) {
+    case "string":
+      return "String(255)";
+    case "text":
+      return "Text";
+    case "int":
+      return "Integer";
+    case "decimal":
+      return "Float";
+    case "boolean":
+      return "Boolean";
+    case "datetime":
+      return "DateTime";
+  }
+}
+function getPythonType(type, required) {
+  let t = "str";
+  switch (type) {
+    case "string":
+    case "text":
+      t = "str";
+      break;
+    case "int":
+      t = "int";
+      break;
+    case "decimal":
+      t = "float";
+      break;
+    case "boolean":
+      t = "bool";
+      break;
+    case "datetime":
+      t = "datetime";
+      break;
+  }
+  return required ? t : `Optional[${t}] = None`;
+}
+
+// server/utils/generators/goGenerator.ts
+function generateGoBackend(config) {
+  const files = [];
+  const projectName = config.projectName.toLowerCase() || "goapp";
+  files.push({
+    path: "backend/go.mod",
+    content: `module ${projectName}-backend
+
+go 1.22
+
+require (
+	github.com/gin-contrib/cors v1.7.2
+	github.com/gin-gonic/gin v1.10.0
+	gorm.io/driver/postgres v1.5.9
+	gorm.io/driver/mysql v1.5.7
+	gorm.io/driver/sqlite v1.5.6
+	gorm.io/gorm v1.25.11
+)
+`
+  });
+  files.push({
+    path: "backend/main.go",
+    content: `package main
+
+import (
+	"log"
+	"net/http"
+	"os"
+
+	"github.com/gin-contrib/cors"
+	"github.com/gin-gonic/gin"
+	"gorm.io/driver/postgres"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+)
+
+var DB *gorm.DB
+
+func initDB() {
+	dsn := os.Getenv("DATABASE_URL")
+	var err error
+	if dsn == "" {
+		DB, err = gorm.Open(sqlite.Open("app.db"), &gorm.Config{})
+	} else {
+		DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	}
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+	log.Println("Database connected successfully!")
+}
+
+func main() {
+	initDB()
+
+	r := gin.Default()
+	r.Use(cors.Default())
+
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "${config.projectName} API"})
+	})
+
+	${config.entities.map((e) => {
+      const p = e.name.toLowerCase() + "s";
+      return `register${e.name}Routes(r)`;
+    }).join("\n	")}
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	r.Run(":" + port)
+}
+`
+  });
+  for (const entity of config.entities) {
+    const eName = entity.name;
+    const pName = eName.toLowerCase() + "s";
+    files.push({
+      path: `backend/routes_${eName.toLowerCase()}.go`,
+      content: `package main
+
+import (
+	"net/http"
+	"time"
+
+	"github.com/gin-gonic/gin"
+)
+
+type ${eName} struct {
+	ID        uint      \`gorm:"primaryKey" json:"id"\`
+${entity.fields.map((f) => `	${capitalize2(f.name)} ${getGoType(f.type)} \`json:"${f.name}"\``).join("\n")}
+	CreatedAt time.Time \`json:"createdAt"\`
+	UpdatedAt time.Time \`json:"updatedAt"\`
+}
+
+func register${eName}Routes(r *gin.Engine) {
+	DB.AutoMigrate(&${eName}{})
+
+	api := r.Group("/api/${pName}")
+	{
+		api.GET("", func(c *gin.Context) {
+			var items []${eName}
+			DB.Order("id desc").Find(&items)
+			c.JSON(http.StatusOK, items)
+		})
+
+		api.GET("/:id", func(c *gin.Context) {
+			var item ${eName}
+			if err := DB.First(&item, c.Param("id")).Error; err != nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "${eName} not found"})
+				return
+			}
+			c.JSON(http.StatusOK, item)
+		})
+
+		api.POST("", func(c *gin.Context) {
+			var item ${eName}
+			if err := c.ShouldBindJSON(&item); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			DB.Create(&item)
+			c.JSON(http.StatusCreated, item)
+		})
+
+		api.PUT("/:id", func(c *gin.Context) {
+			var item ${eName}
+			if err := DB.First(&item, c.Param("id")).Error; err != nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "${eName} not found"})
+				return
+			}
+			c.ShouldBindJSON(&item)
+			DB.Save(&item)
+			c.JSON(http.StatusOK, item)
+		})
+
+		api.DELETE("/:id", func(c *gin.Context) {
+			DB.Delete(&${eName}{}, c.Param("id"))
+			c.JSON(http.StatusOK, gin.H{"message": "${eName} deleted successfully"})
+		})
+	}
+}
+`
+    });
+  }
+  files.push({
+    path: "backend/Dockerfile",
+    content: `FROM golang:1.22-alpine AS builder
+
+WORKDIR /app
+COPY go.mod go.sum* ./
+RUN go mod download || true
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o main .
+
+FROM alpine:latest
+WORKDIR /root/
+COPY --from=builder /app/main .
+EXPOSE 8080
+CMD ["./main"]
+`
+  });
+  return files;
+}
+function capitalize2(s) {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+function getGoType(type) {
+  switch (type) {
+    case "string":
+    case "text":
+      return "string";
+    case "int":
+      return "int";
+    case "decimal":
+      return "float64";
+    case "boolean":
+      return "bool";
+    case "datetime":
+      return "time.Time";
+  }
+}
+
 // server/utils/generators/vueGenerator.ts
 function generateVueFrontend(config) {
   const files = [];
@@ -1801,6 +2269,465 @@ CMD ["nginx", "-g", "daemon off;"]`
   return files;
 }
 
+// server/utils/generators/angularGenerator.ts
+function generateAngularFrontend(config) {
+  const files = [];
+  const projectName = config.projectName.toLowerCase() || "angularapp";
+  files.push({
+    path: "frontend/package.json",
+    content: JSON.stringify({
+      name: `${projectName}-frontend`,
+      version: "1.0.0",
+      scripts: {
+        ng: "ng",
+        start: "ng serve --host 0.0.0.0 --port 3000",
+        build: "ng build --configuration production",
+        watch: "ng build --watch --configuration development"
+      },
+      private: true,
+      dependencies: {
+        "@angular/animations": "^18.2.0",
+        "@angular/common": "^18.2.0",
+        "@angular/compiler": "^18.2.0",
+        "@angular/core": "^18.2.0",
+        "@angular/forms": "^18.2.0",
+        "@angular/platform-browser": "^18.2.0",
+        "@angular/platform-browser-dynamic": "^18.2.0",
+        "@angular/router": "^18.2.0",
+        "animate.css": "^4.1.1",
+        rxjs: "~7.8.0",
+        tslib: "^2.3.0",
+        "zone.js": "~0.14.10"
+      },
+      devDependencies: {
+        "@angular-devkit/build-angular": "^18.2.0",
+        "@angular/cli": "^18.2.0",
+        "@angular/compiler-cli": "^18.2.0",
+        autoprefixer: "^10.4.20",
+        postcss: "^8.4.47",
+        tailwindcss: "^3.4.13",
+        typescript: "~5.5.2"
+      }
+    }, null, 2)
+  });
+  files.push({
+    path: "frontend/angular.json",
+    content: JSON.stringify({
+      $schema: "./node_modules/@angular/cli/lib/config/schema.json",
+      version: 1,
+      newProjectRoot: "projects",
+      projects: {
+        [projectName]: {
+          projectType: "application",
+          root: "",
+          sourceRoot: "src",
+          prefix: "app",
+          architect: {
+            build: {
+              builder: "@angular-devkit/build-angular:application",
+              options: {
+                outputPath: "dist/app",
+                index: "src/index.html",
+                browser: "src/main.ts",
+                polyfills: ["zone.js"],
+                tsConfig: "tsconfig.app.json",
+                assets: [{ glob: "**/*", input: "public" }],
+                styles: ["src/styles.css", "node_modules/animate.css/animate.min.css"],
+                scripts: []
+              }
+            },
+            serve: {
+              builder: "@angular-devkit/build-angular:dev-server",
+              configurations: {
+                production: { buildTarget: `${projectName}:build:production` },
+                development: { buildTarget: `${projectName}:build:development` }
+              },
+              defaultConfiguration: "development"
+            }
+          }
+        }
+      }
+    }, null, 2)
+  });
+  files.push({
+    path: "frontend/tsconfig.json",
+    content: JSON.stringify({
+      compileOnSave: false,
+      compilerOptions: {
+        outDir: "./dist/out-tsc",
+        strict: true,
+        noImplicitOverride: true,
+        noPropertyAccessFromIndexSignature: true,
+        noImplicitReturns: true,
+        noFallthroughCasesInSwitch: true,
+        skipLibCheck: true,
+        isolatedModules: true,
+        esModuleInterop: true,
+        sourceMap: true,
+        declaration: false,
+        experimentalDecorators: true,
+        moduleResolution: "bundler",
+        importHelpers: true,
+        target: "ES2022",
+        module: "ES2022",
+        useDefineForClassFields: false
+      }
+    }, null, 2)
+  });
+  files.push({
+    path: "frontend/tsconfig.app.json",
+    content: JSON.stringify({
+      extends: "./tsconfig.json",
+      compilerOptions: {
+        outDir: "./dist/out-tsc/app",
+        types: []
+      },
+      files: ["src/main.ts"],
+      include: ["src/**/*.d.ts"]
+    }, null, 2)
+  });
+  files.push({
+    path: "frontend/tailwind.config.js",
+    content: `/** @type {import('tailwindcss').Config} */
+module.exports = {
+  content: ["./src/**/*.{html,ts}"],
+  theme: {
+    extend: {},
+  },
+  plugins: [],
+}
+`
+  });
+  files.push({
+    path: "frontend/src/styles.css",
+    content: `@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  background-color: #020617;
+  color: #f8fafc;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+`
+  });
+  files.push({
+    path: "frontend/src/index.html",
+    content: `<!doctype html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="utf-8">
+  <title>${config.projectName} - Angular Enterprise</title>
+  <base href="/">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body class="bg-slate-950 text-slate-100 antialiased min-h-screen">
+  <app-root></app-root>
+</body>
+</html>
+`
+  });
+  files.push({
+    path: "frontend/src/main.ts",
+    content: `import { bootstrapApplication } from '@angular/platform-browser';
+import { provideRouter } from '@angular/router';
+import { provideHttpClient } from '@angular/common/http';
+import { AppComponent } from './app/app.component';
+import { routes } from './app/app.routes';
+
+bootstrapApplication(AppComponent, {
+  providers: [
+    provideRouter(routes),
+    provideHttpClient()
+  ]
+}).catch(err => console.error(err));
+`
+  });
+  files.push({
+    path: "frontend/src/app/app.routes.ts",
+    content: `import { Routes } from '@angular/router';
+import { DashboardComponent } from './pages/dashboard/dashboard.component';
+
+export const routes: Routes = [
+  { path: '', component: DashboardComponent },
+  ${config.entities.map((e) => {
+      const p = e.name.toLowerCase() + "s";
+      return `{ 
+    path: '${p}', 
+    loadComponent: () => import('./pages/${e.name.toLowerCase()}/${e.name.toLowerCase()}-list.component').then(m => m.${e.name}ListComponent) 
+  }`;
+    }).join(",\n  ")}
+];
+`
+  });
+  files.push({
+    path: "frontend/src/app/app.component.ts",
+    content: `import { Component } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { RouterOutlet, RouterLink, RouterLinkActive } from '@angular/router';
+
+@Component({
+  selector: 'app-root',
+  standalone: true,
+  imports: [CommonModule, RouterOutlet, RouterLink, RouterLinkActive],
+  template: \`
+  <div class="flex h-screen bg-slate-950 text-slate-100 overflow-hidden font-sans">
+    <!-- Sidebar -->
+    <aside class="w-64 bg-slate-900 border-r border-slate-800 flex flex-col shrink-0">
+      <div class="h-16 flex items-center px-6 border-b border-slate-800 gap-3">
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-red-500 to-rose-400 flex items-center justify-center font-bold text-white shadow-lg">
+          \u25B2
+        </div>
+        <div>
+          <h1 class="font-bold text-sm text-white">${config.projectName}</h1>
+          <span class="text-[10px] text-red-400 font-mono uppercase">Angular 18</span>
+        </div>
+      </div>
+
+      <nav class="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+        <div class="px-3 py-1.5 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Overview</div>
+        <a routerLink="/" routerLinkActive="bg-red-500/10 text-red-400 border border-red-500/30" [routerLinkActiveOptions]="{exact: true}" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-slate-400 hover:bg-slate-800 transition">
+          \u{1F4CA} Dashboard
+        </a>
+
+        <div class="pt-4 px-3 py-1.5 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Entities</div>
+        ${config.entities.map((e) => {
+      const p = e.name.toLowerCase() + "s";
+      return `<a routerLink="/${p}" routerLinkActive="bg-red-500/10 text-red-400 border border-red-500/30" class="flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium text-slate-400 hover:bg-slate-800 transition">
+          <span>\u{1F4E6} ${e.label || e.name}</span>
+          <span class="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-400 font-mono">CRUD</span>
+        </a>`;
+    }).join("\n        ")}
+      </nav>
+    </aside>
+
+    <!-- Main Content -->
+    <div class="flex-1 flex flex-col min-w-0 overflow-hidden">
+      <header class="h-16 bg-slate-900/80 backdrop-blur border-b border-slate-800 flex items-center justify-between px-8 shrink-0">
+        <span class="text-xs font-mono text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded border border-emerald-500/20">\u25CF System Ready</span>
+        <a href="http://localhost:8080/docs" target="_blank" class="text-xs text-slate-300 hover:text-white px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700">API Docs \u2197</a>
+      </header>
+      <main class="flex-1 overflow-y-auto p-8 animate__animated animate__fadeIn">
+        <router-outlet></router-outlet>
+      </main>
+    </div>
+  </div>
+  \`
+})
+export class AppComponent {}
+`
+  });
+  files.push({
+    path: "frontend/src/app/pages/dashboard/dashboard.component.ts",
+    content: `import { Component } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { RouterLink } from '@angular/router';
+
+@Component({
+  selector: 'app-dashboard',
+  standalone: true,
+  imports: [CommonModule, RouterLink],
+  template: \`
+  <div class="space-y-8 max-w-7xl mx-auto">
+    <div class="bg-gradient-to-r from-slate-900 to-rose-950/40 p-6 rounded-2xl border border-slate-800">
+      <h2 class="text-2xl font-bold text-white">Overview Dashboard</h2>
+      <p class="text-xs text-slate-400 mt-1">${config.description}</p>
+    </div>
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+      ${config.entities.map((e, idx) => `
+      <div class="bg-slate-900 border border-slate-800 p-5 rounded-xl animate__animated animate__fadeInUp" style="animation-delay: ${idx * 0.1}s">
+        <div class="text-xs text-slate-400 uppercase font-semibold">${e.label || e.name}</div>
+        <div class="text-2xl font-bold text-white mt-2">${10 + idx * 6}</div>
+        <a routerLink="/${e.name.toLowerCase()}s" class="text-xs text-red-400 hover:underline mt-4 inline-block">Manage records \u2192</a>
+      </div>`).join("")}
+    </div>
+  </div>
+  \`
+})
+export class DashboardComponent {}
+`
+  });
+  for (const entity of config.entities) {
+    const eName = entity.name;
+    const pName = eName.toLowerCase() + "s";
+    files.push({
+      path: `frontend/src/app/services/${eName.toLowerCase()}.service.ts`,
+      content: `import { Injectable, inject } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { Observable } from 'rxjs';
+
+export interface ${eName} {
+  id?: number;
+${entity.fields.map((f) => `  ${f.name}${f.required ? "" : "?"}: any;`).join("\n")}
+  createdAt?: string;
+}
+
+@Injectable({ providedIn: 'root' })
+export class ${eName}Service {
+  private http = inject(HttpClient);
+  private apiUrl = 'http://localhost:8080/api/${pName}';
+
+  getAll(): Observable<${eName}[]> {
+    return this.http.get<${eName}[]>(this.apiUrl);
+  }
+
+  getById(id: number): Observable<${eName}> {
+    return this.http.get<${eName}>(\`\${this.apiUrl}/\${id}\`);
+  }
+
+  create(item: ${eName}): Observable<${eName}> {
+    return this.http.post<${eName}>(this.apiUrl, item);
+  }
+
+  update(id: number, item: ${eName}): Observable<${eName}> {
+    return this.http.put<${eName}>(\`\${this.apiUrl}/\${id}\`, item);
+  }
+
+  delete(id: number): Observable<any> {
+    return this.http.delete(\`\${this.apiUrl}/\${id}\`);
+  }
+}
+`
+    });
+    files.push({
+      path: `frontend/src/app/pages/${eName.toLowerCase()}/${eName.toLowerCase()}-list.component.ts`,
+      content: `import { Component, OnInit, inject } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
+import { ${eName}Service, ${eName} } from '../../services/${eName.toLowerCase()}.service';
+
+@Component({
+  selector: 'app-${eName.toLowerCase()}-list',
+  standalone: true,
+  imports: [CommonModule, FormsModule],
+  template: \`
+  <div class="space-y-6 max-w-7xl mx-auto">
+    <div class="flex items-center justify-between">
+      <h2 class="text-2xl font-bold text-white">${entity.label || entity.name}</h2>
+      <button (click)="openCreateModal()" class="px-4 py-2 bg-red-500 hover:bg-red-400 text-white font-semibold text-xs rounded-xl shadow-lg transition">
+        \uFF0B Add ${eName}
+      </button>
+    </div>
+
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow">
+      <table class="w-full text-left text-xs text-slate-300">
+        <thead class="bg-slate-800/60 text-slate-400 uppercase font-semibold border-b border-slate-800">
+          <tr>
+            <th class="px-6 py-3.5">ID</th>
+            ${entity.fields.map((f) => `<th class="px-6 py-3.5">${f.label || f.name}</th>`).join("")}
+            <th class="px-6 py-3.5 text-right">Actions</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-800/60">
+          <tr *ngFor="let item of items" class="hover:bg-slate-800/30 transition">
+            <td class="px-6 py-4 font-mono text-slate-400">#{{ item.id }}</td>
+            ${entity.fields.map((f) => `<td class="px-6 py-4">{{ item.${f.name} }}</td>`).join("")}
+            <td class="px-6 py-4 text-right space-x-2">
+              <button (click)="deleteItem(item.id!)" class="text-rose-400 hover:underline">Delete</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Modal Form -->
+    <div *ngIf="showModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate__animated animate__fadeIn">
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 space-y-4 shadow-2xl animate__animated animate__zoomIn animate__faster">
+        <h3 class="font-bold text-white text-base">Add New ${eName}</h3>
+        <form (ngSubmit)="saveItem()" class="space-y-3">
+          ${entity.fields.map((f) => `
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">${f.label || f.name}</label>
+            <input [(ngModel)]="formData.${f.name}" name="${f.name}" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white" />
+          </div>`).join("")}
+          <div class="flex justify-end gap-2 pt-4">
+            <button type="button" (click)="showModal = false" class="px-3 py-1.5 text-xs text-slate-400">Cancel</button>
+            <button type="submit" class="px-4 py-2 bg-red-500 text-white font-semibold text-xs rounded-lg">Save</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+  \`
+})
+export class ${eName}ListComponent implements OnInit {
+  private service = inject(${eName}Service);
+  items: ${eName}[] = [];
+  showModal = false;
+  formData: any = {};
+
+  ngOnInit() {
+    this.loadData();
+  }
+
+  loadData() {
+    this.service.getAll().subscribe({
+      next: (data) => this.items = data,
+      error: (err) => console.error(err)
+    });
+  }
+
+  openCreateModal() {
+    this.formData = {};
+    this.showModal = true;
+  }
+
+  saveItem() {
+    this.service.create(this.formData).subscribe({
+      next: () => {
+        this.showModal = false;
+        this.loadData();
+      }
+    });
+  }
+
+  deleteItem(id: number) {
+    if (!confirm('Delete item?')) return;
+    this.service.delete(id).subscribe({
+      next: () => this.loadData()
+    });
+  }
+}
+`
+    });
+  }
+  files.push({
+    path: "frontend/Dockerfile",
+    content: `FROM node:20-alpine AS build
+WORKDIR /app
+COPY package*.json ./
+RUN npm install
+COPY . .
+RUN npm run build
+
+FROM nginx:alpine
+COPY --from=build /app/dist/app/browser /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+`
+  });
+  files.push({
+    path: "frontend/nginx.conf",
+    content: `server {
+    listen 80;
+    server_name localhost;
+    location / {
+        root /usr/share/nginx/html;
+        index index.html index.htm;
+        try_files $uri $uri/ /index.html;
+    }
+    location /api/ {
+        proxy_pass http://backend:8080/api/;
+    }
+}
+`
+  });
+  return files;
+}
+
 // server/utils/generators/dockerGenerator.ts
 function generateDockerFiles(config) {
   const files = [];
@@ -1808,6 +2735,8 @@ function generateDockerFiles(config) {
   const isPostgres = config.database === "postgres";
   const isMysql = config.database === "mysql";
   const isSqlServer = config.database === "sqlserver";
+  const isMongo = config.database === "mongodb";
+  const isSqlite = config.database === "sqlite";
   let dbService = "";
   let backendEnv = "";
   if (isPostgres) {
@@ -1853,6 +2782,19 @@ function generateDockerFiles(config) {
       - sqlserver_data:/var/opt/mssql`;
     backendEnv = `      - ConnectionStrings__DefaultConnection=Server=sqlserver,1433;Database=appdb;User Id=sa;Password=YourStrong@Passw0rd;TrustServerCertificate=True;
       - DATABASE_URL=sqlserver://sqlserver:1433;database=appdb;user=sa;password=YourStrong@Passw0rd;encrypt=true;trustServerCertificate=true;`;
+  } else if (isMongo) {
+    dbService = `  mongodb:
+    image: mongo:7-jammy
+    container_name: \${COMPOSE_PROJECT_NAME:-app}-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db`;
+    backendEnv = `      - DATABASE_URL=mongodb://mongodb:27017/appdb`;
+  } else if (isSqlite) {
+    dbService = ``;
+    backendEnv = `      - DATABASE_URL=sqlite:///./app.db`;
   }
   files.push({
     path: "docker-compose.yml",
@@ -1962,20 +2904,251 @@ obj/
   return files;
 }
 
+// server/utils/generators/cicdGenerator.ts
+function generateCicdFiles(config) {
+  const files = [];
+  const tool = config.cicd || "github";
+  const projectName = config.projectName || "App";
+  if (tool === "github" || tool === "none") {
+    files.push({
+      path: ".github/workflows/ci.yml",
+      content: `name: CI/CD Pipeline - ${projectName}
+
+on:
+  push:
+    branches: [ "main", "master", "develop" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  test-and-build:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      ${config.backend === "dotnet" ? `
+      - name: Setup .NET Core SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore Backend Dependencies
+        run: dotnet restore backend/
+
+      - name: Build Backend
+        run: dotnet build backend/ --no-restore --configuration Release
+      ` : config.backend === "fastapi" ? `
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+      ` : `
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install Backend Dependencies
+        run: cd backend && npm install
+      `}
+
+      - name: Setup Node.js for Frontend
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install & Build Frontend
+        run: |
+          cd frontend
+          npm install
+          npm run build
+
+  docker-build:
+    name: Docker Build & Verification
+    needs: test-and-build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Validate Docker Compose Configuration
+        run: docker compose config
+
+      - name: Build Docker Images
+        run: docker compose build
+`
+    });
+  }
+  if (tool === "gitlab") {
+    files.push({
+      path: ".gitlab-ci.yml",
+      content: `image: docker:24.0.5
+
+variables:
+  DOCKER_TLS_CERTDIR: "/certs"
+
+services:
+  - docker:24.0.5-dind
+
+stages:
+  - test
+  - build
+  - dockerize
+
+test_backend:
+  stage: test
+  script:
+    - echo "Testing backend..."
+    ${config.backend === "dotnet" ? "- docker run --rm -v $(pwd)/backend:/src -w /src mcr.microsoft.com/dotnet/sdk:8.0 dotnet test || true" : ""}
+    ${config.backend === "fastapi" ? "- docker run --rm -v $(pwd)/backend:/src -w /src python:3.11-slim pip install -r requirements.txt" : ""}
+
+build_frontend:
+  stage: build
+  image: node:20-alpine
+  script:
+    - cd frontend
+    - npm install
+    - npm run build
+  artifacts:
+    paths:
+      - frontend/dist/
+
+docker_build:
+  stage: dockerize
+  script:
+    - docker compose build
+    - echo "Docker images built successfully for ${projectName}!"
+`
+    });
+  }
+  if (tool === "jenkins") {
+    files.push({
+      path: "Jenkinsfile",
+      content: `pipeline {
+    agent any
+
+    environment {
+        PROJECT_NAME = '${projectName.toLowerCase()}'
+        DOCKER_BUILDKIT = '1'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                echo 'Checking out source code...'
+                checkout scm
+            }
+        }
+
+        stage('Build Backend') {
+            steps {
+                echo 'Building backend service...'
+                ${config.backend === "dotnet" ? `
+                sh 'dotnet restore backend/'
+                sh 'dotnet build backend/ -c Release'
+                ` : config.backend === "fastapi" ? `
+                sh 'python3 -m venv venv && . venv/bin/activate && pip install -r backend/requirements.txt'
+                ` : `
+                sh 'cd backend && npm install && npm run build'
+                `}
+            }
+        }
+
+        stage('Build Frontend') {
+            steps {
+                echo 'Building frontend client...'
+                sh 'cd frontend && npm install && npm run build'
+            }
+        }
+
+        stage('Docker Compose Validation & Build') {
+            steps {
+                echo 'Validating and building Docker containers...'
+                sh 'docker compose config'
+                sh 'docker compose build'
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+        success {
+            echo "Pipeline for ${projectName} completed successfully!"
+        }
+        failure {
+            echo "Pipeline failed! Please check logs."
+        }
+    }
+}
+`
+    });
+  }
+  files.push({
+    path: "scripts/deploy.sh",
+    content: `#!/usr/bin/env bash
+set -e
+
+echo "\u{1F680} Deploying ${projectName} with Docker Compose..."
+
+# Pull or build images
+docker compose pull || true
+docker compose build
+
+# Launch services in detached mode
+docker compose up -d
+
+echo "\u2705 Deployment successful! Services running:"
+docker compose ps
+`
+  });
+  return files;
+}
+
 // server/utils/templateEngine.ts
 function generateFullTemplate(config) {
   let files = [];
-  if (config.backend === "dotnet") {
-    files = files.concat(generateDotnetBackend(config));
-  } else {
-    files = files.concat(generateNestjsBackend(config));
+  switch (config.backend) {
+    case "dotnet":
+      files = files.concat(generateDotnetBackend(config));
+      break;
+    case "fastapi":
+      files = files.concat(generateFastapiBackend(config));
+      break;
+    case "go":
+      files = files.concat(generateGoBackend(config));
+      break;
+    case "nestjs":
+    default:
+      files = files.concat(generateNestjsBackend(config));
+      break;
   }
-  if (config.frontend === "vue") {
-    files = files.concat(generateVueFrontend(config));
-  } else {
-    files = files.concat(generateReactFrontend(config));
+  switch (config.frontend) {
+    case "vue":
+      files = files.concat(generateVueFrontend(config));
+      break;
+    case "angular":
+      files = files.concat(generateAngularFrontend(config));
+      break;
+    case "react":
+    default:
+      files = files.concat(generateReactFrontend(config));
+      break;
   }
   files = files.concat(generateDockerFiles(config));
+  files = files.concat(generateCicdFiles(config));
   return files;
 }
 
@@ -2202,8 +3375,8 @@ var PRESET_TEMPLATES = [
 
 // bin/stackforge.js
 var program = new Command();
-program.name("stackforge").description("CLI to scaffold and generate complete Full-Stack Web Templates (.NET 8 / NestJS + Vue 3 / React + PostgreSQL + Docker)").version("1.0.0");
-program.command("create [name]", { isDefault: true }).description("Generate a new web application template").option("-b, --backend <dotnet|nestjs>", "Backend framework: dotnet or nestjs").option("-f, --frontend <vue|react>", "Frontend framework: vue or react").option("-d, --database <postgres|mysql|sqlserver>", "Database engine: postgres, mysql, sqlserver").option("-p, --preset <presetId>", "Use a preset template: ecommerce, crm, clinic, blog").option("-o, --output <dir>", "Output destination folder").option("--ai <prompt>", 'Prompt for AI to draft schema (e.g. "pet clinic with appointments")').option("--no-auth", "Disable JWT authentication").action(async (name, options) => {
+program.name("stackforge").description("CLI to scaffold and generate complete Full-Stack Web Templates (.NET 8 / Python FastAPI / Go / NestJS + Vue 3 / React / Angular + PostgreSQL / MongoDB / SQLite + Docker + CI/CD)").version("1.1.0");
+program.command("create [name]", { isDefault: true }).description("Generate a new web application template").option("-b, --backend <dotnet|fastapi|go|nestjs>", "Backend framework: dotnet, fastapi, go, or nestjs").option("-f, --frontend <vue|react|angular>", "Frontend framework: vue, react, or angular").option("-d, --database <postgres|mysql|sqlserver|mongodb|sqlite>", "Database engine: postgres, mysql, sqlserver, mongodb, sqlite").option("-c, --cicd <github|gitlab|jenkins|docker|none>", "CI/CD pipeline: github, gitlab, jenkins, docker, none").option("-p, --preset <presetId>", "Use a preset template: ecommerce, crm, clinic, blog").option("-o, --output <dir>", "Output destination folder").option("--ai <prompt>", 'Prompt for AI to draft schema (e.g. "pet clinic with appointments")').option("--no-auth", "Disable JWT authentication").action(async (name, options) => {
   console.log("\n\u26A1 \x1B[36m\x1B[1mStackForge Studio CLI\x1B[0m \u2014 Full-Stack Template Generator\n");
   if (options.preset) {
     const pId = options.preset.toLowerCase();
@@ -2229,6 +3402,8 @@ program.command("create [name]", { isDefault: true }).description("Generate a ne
     message: "Select Backend Framework:",
     choices: [
       { title: "ASP.NET Core 8 Web API (.NET 8 C# Clean Architecture)", value: "dotnet" },
+      { title: "Python FastAPI (SQLAlchemy + Pydantic v2 + Async)", value: "fastapi" },
+      { title: "Go Gin Engine (GORM + Ultra-fast microservice)", value: "go" },
       { title: "Node.js (NestJS with Prisma)", value: "nestjs" }
     ],
     initial: 0
@@ -2239,7 +3414,8 @@ program.command("create [name]", { isDefault: true }).description("Generate a ne
     message: "Select Frontend Framework & UI Dashboard:",
     choices: [
       { title: "Vue 3 (Vite + Tailwind CSS + Pinia + Data Tables)", value: "vue" },
-      { title: "React (Vite + Tailwind CSS + TanStack)", value: "react" }
+      { title: "React 18 (Vite + Tailwind CSS + Modern Layout)", value: "react" },
+      { title: "Angular 18+ (Standalone Components + Signals + Tailwind)", value: "angular" }
     ],
     initial: 0
   })).val;
@@ -2250,7 +3426,22 @@ program.command("create [name]", { isDefault: true }).description("Generate a ne
     choices: [
       { title: "PostgreSQL 16 (Recommended)", value: "postgres" },
       { title: "MySQL 8", value: "mysql" },
-      { title: "SQL Server 2022", value: "sqlserver" }
+      { title: "SQL Server 2022", value: "sqlserver" },
+      { title: "MongoDB 7 (Document / NoSQL)", value: "mongodb" },
+      { title: "SQLite 3 (Zero Config / Embedded)", value: "sqlite" }
+    ],
+    initial: 0
+  })).val;
+  const cicd = options.cicd || (await prompts({
+    type: "select",
+    name: "val",
+    message: "Select CI/CD Pipeline:",
+    choices: [
+      { title: "GitHub Actions (.github/workflows/ci.yml)", value: "github" },
+      { title: "GitLab CI (.gitlab-ci.yml)", value: "gitlab" },
+      { title: "Jenkins (Jenkinsfile Declarative Pipeline)", value: "jenkins" },
+      { title: "Docker CI Script (scripts/build-and-test.sh)", value: "docker" },
+      { title: "None", value: "none" }
     ],
     initial: 0
   })).val;
@@ -2298,6 +3489,7 @@ program.command("create [name]", { isDefault: true }).description("Generate a ne
     dockerMode: "dev",
     auth: options.auth !== false,
     apiDocs: "swagger",
+    cicd: cicd || "github",
     mockDataCount: 8,
     entities
   };

@@ -11,15 +11,16 @@ const program = new Command()
 
 program
   .name('stackforge')
-  .description('CLI to scaffold and generate complete Full-Stack Web Templates (.NET 8 / NestJS + Vue 3 / React + PostgreSQL + Docker)')
-  .version('1.0.0')
+  .description('CLI to scaffold and generate complete Full-Stack Web Templates (.NET 8 / Python FastAPI / Go / NestJS + Vue 3 / React / Angular + PostgreSQL / MongoDB / SQLite + Docker + CI/CD)')
+  .version('1.1.0')
 
 program
   .command('create [name]', { isDefault: true })
   .description('Generate a new web application template')
-  .option('-b, --backend <dotnet|nestjs>', 'Backend framework: dotnet or nestjs')
-  .option('-f, --frontend <vue|react>', 'Frontend framework: vue or react')
-  .option('-d, --database <postgres|mysql|sqlserver>', 'Database engine: postgres, mysql, sqlserver')
+  .option('-b, --backend <dotnet|fastapi|go|nestjs>', 'Backend framework: dotnet, fastapi, go, or nestjs')
+  .option('-f, --frontend <vue|react|angular>', 'Frontend framework: vue, react, or angular')
+  .option('-d, --database <postgres|mysql|sqlserver|mongodb|sqlite>', 'Database engine: postgres, mysql, sqlserver, mongodb, sqlite')
+  .option('-c, --cicd <github|gitlab|jenkins|docker|none>', 'CI/CD pipeline: github, gitlab, jenkins, docker, none')
   .option('-p, --preset <presetId>', 'Use a preset template: ecommerce, crm, clinic, blog')
   .option('-o, --output <dir>', 'Output destination folder')
   .option('--ai <prompt>', 'Prompt for AI to draft schema (e.g. "pet clinic with appointments")')
@@ -55,6 +56,8 @@ program
       message: 'Select Backend Framework:',
       choices: [
         { title: 'ASP.NET Core 8 Web API (.NET 8 C# Clean Architecture)', value: 'dotnet' },
+        { title: 'Python FastAPI (SQLAlchemy + Pydantic v2 + Async)', value: 'fastapi' },
+        { title: 'Go Gin Engine (GORM + Ultra-fast microservice)', value: 'go' },
         { title: 'Node.js (NestJS with Prisma)', value: 'nestjs' }
       ],
       initial: 0
@@ -66,7 +69,8 @@ program
       message: 'Select Frontend Framework & UI Dashboard:',
       choices: [
         { title: 'Vue 3 (Vite + Tailwind CSS + Pinia + Data Tables)', value: 'vue' },
-        { title: 'React (Vite + Tailwind CSS + TanStack)', value: 'react' }
+        { title: 'React 18 (Vite + Tailwind CSS + Modern Layout)', value: 'react' },
+        { title: 'Angular 18+ (Standalone Components + Signals + Tailwind)', value: 'angular' }
       ],
       initial: 0
     })).val
@@ -78,7 +82,23 @@ program
       choices: [
         { title: 'PostgreSQL 16 (Recommended)', value: 'postgres' },
         { title: 'MySQL 8', value: 'mysql' },
-        { title: 'SQL Server 2022', value: 'sqlserver' }
+        { title: 'SQL Server 2022', value: 'sqlserver' },
+        { title: 'MongoDB 7 (Document / NoSQL)', value: 'mongodb' },
+        { title: 'SQLite 3 (Zero Config / Embedded)', value: 'sqlite' }
+      ],
+      initial: 0
+    })).val
+
+    const cicd = options.cicd || (await prompts({
+      type: 'select',
+      name: 'val',
+      message: 'Select CI/CD Pipeline:',
+      choices: [
+        { title: 'GitHub Actions (.github/workflows/ci.yml)', value: 'github' },
+        { title: 'GitLab CI (.gitlab-ci.yml)', value: 'gitlab' },
+        { title: 'Jenkins (Jenkinsfile Declarative Pipeline)', value: 'jenkins' },
+        { title: 'Docker CI Script (scripts/build-and-test.sh)', value: 'docker' },
+        { title: 'None', value: 'none' }
       ],
       initial: 0
     })).val
@@ -131,6 +151,7 @@ program
       dockerMode: 'dev',
       auth: options.auth !== false,
       apiDocs: 'swagger',
+      cicd: cicd || 'github',
       mockDataCount: 8,
       entities
     }

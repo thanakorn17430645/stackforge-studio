@@ -6,6 +6,8 @@ export function generateDockerFiles(config: TemplateConfig): GeneratedFile[] {
   const isPostgres = config.database === 'postgres'
   const isMysql = config.database === 'mysql'
   const isSqlServer = config.database === 'sqlserver'
+  const isMongo = config.database === 'mongodb'
+  const isSqlite = config.database === 'sqlite'
 
   let dbService = ''
   let backendEnv = ''
@@ -56,6 +58,20 @@ export function generateDockerFiles(config: TemplateConfig): GeneratedFile[] {
 
     backendEnv = `      - ConnectionStrings__DefaultConnection=Server=sqlserver,1433;Database=appdb;User Id=sa;Password=YourStrong@Passw0rd;TrustServerCertificate=True;
       - DATABASE_URL=sqlserver://sqlserver:1433;database=appdb;user=sa;password=YourStrong@Passw0rd;encrypt=true;trustServerCertificate=true;`
+  } else if (isMongo) {
+    dbService = `  mongodb:
+    image: mongo:7-jammy
+    container_name: \${COMPOSE_PROJECT_NAME:-app}-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db`
+
+    backendEnv = `      - DATABASE_URL=mongodb://mongodb:27017/appdb`
+  } else if (isSqlite) {
+    dbService = ``
+    backendEnv = `      - DATABASE_URL=sqlite:///./app.db`
   }
 
   // docker-compose.yml

@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import type { TemplateConfig, EntityModel, EntityField, BackendFramework, FrontendFramework, DatabaseType, DockerMode, ApiDocsType } from '~/types/template'
+import type { TemplateConfig, EntityModel, EntityField, BackendFramework, FrontendFramework, DatabaseType, DockerMode, ApiDocsType, CicdTool } from '~/types/template'
 import { PRESET_TEMPLATES } from '~/types/presets'
 
 export const useTemplateStore = defineStore('template', {
@@ -18,6 +18,7 @@ export const useTemplateStore = defineStore('template', {
       dockerMode: 'dev',
       auth: true,
       apiDocs: 'swagger',
+      cicd: 'github',
       mockDataCount: 8,
       entities: [
         {
@@ -73,6 +74,10 @@ export const useTemplateStore = defineStore('template', {
 
     setDatabase(database: DatabaseType) {
       this.config.database = database
+    },
+
+    setCicd(cicd: CicdTool) {
+      this.config.cicd = cicd
     },
 
     addEntity(entity: EntityModel) {
