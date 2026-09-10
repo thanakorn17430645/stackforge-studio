@@ -57,6 +57,15 @@
     <!-- Actions -->
     <div class="mt-6 pt-4 border-t border-slate-800/80 flex items-center gap-2">
       <button 
+        @click="previewPreset"
+        class="py-2 px-3 rounded-xl bg-teal-500/10 hover:bg-teal-500/20 text-teal-300 text-xs font-semibold transition border border-teal-500/30 flex items-center justify-center gap-1.5 active:scale-95 shadow-sm"
+        title="Live Interactive Web Preview"
+      >
+        <span>👁️</span>
+        <span>Preview</span>
+      </button>
+
+      <button 
         @click="customizePreset"
         class="py-2 px-2.5 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-200 text-xs font-semibold transition border border-slate-700/60 flex items-center justify-center gap-1 hover:border-slate-500 active:scale-95"
         title="Customize in Visual Studio"
@@ -67,7 +76,7 @@
 
       <button 
         @click="copyCliCommand"
-        class="py-2 px-2.5 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-teal-300 text-xs font-semibold transition border border-slate-700/60 flex items-center justify-center gap-1 active:scale-95"
+        class="py-2 px-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-teal-300 text-xs font-semibold transition border border-slate-700/60 flex items-center justify-center gap-1 active:scale-95"
         :class="{ 'animate__animated animate__rubberBand bg-teal-950 border-teal-500': copiedCli }"
         title="Copy Terminal / PowerShell Command"
       >
@@ -109,6 +118,11 @@ const copyCliCommand = async () => {
   setTimeout(() => {
     copiedCli.value = false
   }, 2500)
+}
+
+const previewPreset = () => {
+  store.loadPreset(props.preset.id)
+  router.push('/preview')
 }
 
 const customizePreset = () => {

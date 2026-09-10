@@ -18,6 +18,26 @@
       </div>
 
       <div class="flex items-center gap-3">
+        <!-- Preview Mode Tabs -->
+        <div class="bg-slate-900 p-1 rounded-xl border border-slate-800 flex items-center gap-1 text-xs">
+          <button 
+            @click="previewTab = 'web'"
+            class="px-3.5 py-1.5 rounded-lg font-semibold transition flex items-center gap-1.5"
+            :class="previewTab === 'web' ? 'bg-gradient-to-r from-teal-400 to-emerald-400 text-slate-950 shadow-md shadow-teal-500/20' : 'text-slate-400 hover:text-white'"
+          >
+            <span>🌐</span>
+            <span>Interactive Web App</span>
+          </button>
+          <button 
+            @click="previewTab = 'code'"
+            class="px-3.5 py-1.5 rounded-lg font-semibold transition flex items-center gap-1.5"
+            :class="previewTab === 'code' ? 'bg-gradient-to-r from-teal-400 to-emerald-400 text-slate-950 shadow-md shadow-teal-500/20' : 'text-slate-400 hover:text-white'"
+          >
+            <span>📁</span>
+            <span>Source Code Explorer</span>
+          </button>
+        </div>
+
         <button 
           @click="regenerate" 
           :disabled="store.isGenerating"
@@ -29,8 +49,15 @@
       </div>
     </div>
 
-    <!-- Code Viewer Component -->
-    <CodeViewer />
+    <!-- 1. Interactive Live Web UI Preview -->
+    <div v-show="previewTab === 'web'">
+      <TemplateWebPreview :config="store.config" />
+    </div>
+
+    <!-- 2. Source Code Explorer Component -->
+    <div v-show="previewTab === 'code'">
+      <CodeViewer />
+    </div>
 
     <!-- Docker Instructions Banner -->
     <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col md:flex-row items-center justify-between gap-4">
@@ -59,6 +86,7 @@ import { useTemplateStore } from '~/stores/templateStore'
 
 const store = useTemplateStore()
 const copiedCmd = ref(false)
+const previewTab = ref<'web' | 'code'>('web')
 
 const regenerate = async () => {
   await store.fetchPreview()

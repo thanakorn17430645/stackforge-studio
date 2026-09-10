@@ -53,6 +53,14 @@
       >
         <span>2. Database Entities & CRUD ({{ store.config.entities.length }})</span>
       </button>
+
+      <button 
+        @click="activeTab = 'preview'"
+        class="px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold transition flex items-center gap-2"
+        :class="activeTab === 'preview' ? 'bg-teal-500/10 text-teal-400 border border-teal-500/30' : 'text-slate-400 hover:text-white hover:bg-slate-900'"
+      >
+        <span>🌐 3. Live Web App Preview</span>
+      </button>
     </div>
 
     <!-- Tab 1: Stack Selector -->
@@ -63,6 +71,22 @@
     <!-- Tab 2: Entity & Field Designer -->
     <div v-show="activeTab === 'entities'">
       <EntityDesigner />
+    </div>
+
+    <!-- Tab 3: Interactive Web App Preview -->
+    <div v-show="activeTab === 'preview'">
+      <div class="space-y-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <h3 class="text-lg font-bold text-white">Interactive Web App Live Preview</h3>
+            <p class="text-xs text-slate-400">Interact with the real-time preview of the dashboard, data tables, search filters, and modals before exporting.</p>
+          </div>
+          <span class="text-xs font-mono px-2.5 py-1 rounded bg-teal-500/10 text-teal-400 border border-teal-500/20">
+            Reactive Preview
+          </span>
+        </div>
+        <TemplateWebPreview :config="store.config" />
+      </div>
     </div>
 
     <!-- CLI Command Box -->
@@ -110,12 +134,21 @@
         <!-- Actions -->
         <div class="flex items-center gap-2 sm:gap-3 w-full md:w-auto">
           <button 
+            @click="activeTab = 'preview'"
+            class="flex-1 md:flex-none px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-teal-300 text-xs font-semibold transition border border-teal-500/30 flex items-center justify-center gap-1.5 active:scale-95"
+            :class="{ 'bg-teal-950/60 border-teal-400': activeTab === 'preview' }"
+          >
+            <span>🌐</span>
+            <span>Live UI Preview</span>
+          </button>
+
+          <button 
             @click="previewCode"
             :disabled="store.isGenerating"
             class="flex-1 md:flex-none px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold transition border border-slate-700 flex items-center justify-center gap-2 active:scale-95"
           >
             <span>{{ store.isGenerating ? '⏳' : '👁️' }}</span>
-            <span>{{ store.isGenerating ? 'Generating...' : 'Live Preview Code' }}</span>
+            <span>{{ store.isGenerating ? 'Generating...' : 'Inspect Code' }}</span>
           </button>
 
           <button 
@@ -139,7 +172,7 @@ import { useTemplateStore } from '~/stores/templateStore'
 
 const store = useTemplateStore()
 const router = useRouter()
-const activeTab = ref<'stack' | 'entities'>('stack')
+const activeTab = ref<'stack' | 'entities' | 'preview'>('stack')
 const downloading = ref(false)
 const copiedCli = ref(false)
 
